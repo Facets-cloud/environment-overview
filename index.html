@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Environment Overview — Local Test</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; background: #f4f6f9; }
+    .test-bar {
+      background: #1a1a2e; color: #eee; padding: .6rem 1.5rem;
+      font-size: 13px; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    }
+    .test-bar strong { color: #7ec8e3; }
+    .test-bar label  { display: flex; align-items: center; gap: .4rem; }
+    .test-bar input  { padding: .3rem .5rem; border-radius: 4px; border: none; font-size: 13px; width: 220px; }
+    .test-bar button { padding: .3rem .8rem; border-radius: 4px; border: none; background: #0050b3; color: #fff; cursor: pointer; font-size: 13px; }
+    .test-bar .note  { font-size: 11px; color: #aaa; }
+  </style>
+</head>
+<body>
+
+  <div class="test-bar">
+    <strong>Environment Overview — Test</strong>
+    <label>
+      Cluster ID:
+      <input id="cid" type="text" placeholder="paste cluster ID here" />
+    </label>
+    <span style="color:#777">— or —</span>
+    <label>Stack: <input id="sname" type="text" placeholder="stack-name" style="width:140px" /></label>
+    <label>Env:   <input id="cname" type="text" placeholder="cluster-name" style="width:140px" /></label>
+    <button onclick="loadComponent()">Load</button>
+    <span class="note">API calls use the active Facets session cookie.</span>
+  </div>
+
+  <div id="mount"></div>
+
+  <script src="environment-overview.js"></script>
+  <script>
+    function loadComponent() {
+      var cid   = document.getElementById('cid').value.trim();
+      var sname = document.getElementById('sname').value.trim();
+      var cname = document.getElementById('cname').value.trim();
+      var mount = document.getElementById('mount');
+      mount.innerHTML = '';
+
+      var el = document.createElement('environment-overview');
+      if (cid) {
+        el.setAttribute('cluster-id', cid);
+      } else if (sname && cname) {
+        el.setAttribute('stack-name',   sname);
+        el.setAttribute('cluster-name', cname);
+      } else {
+        mount.innerHTML = '<p style="padding:2rem;color:#c00">Enter a cluster-id or stack + env name.</p>';
+        return;
+      }
+
+      el.addEventListener('facets-navigate', function(e) {
+        console.log('[facets-navigate]', e.detail.route);
+        alert('Would navigate to: ' + e.detail.route);
+      });
+
+      mount.appendChild(el);
+    }
+
+    // Auto-load from URL param ?clusterId=xxx
+    (function() {
+      var p   = new URLSearchParams(window.location.search);
+      var cid = p.get('clusterId') || p.get('cluster-id');
+      if (cid) {
+        document.getElementById('cid').value = cid;
+        loadComponent();
+      }
+    })();
+  </script>
+</body>
+</html>
