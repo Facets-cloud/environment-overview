@@ -47,11 +47,61 @@ class EnvironmentOverview extends HTMLElement {
     this.stackName   = this.getAttribute('stack-name');
     this.clusterName = this.getAttribute('cluster-name');
 
-    if (!this.clusterId && !(this.stackName && this.clusterName)) {
-      this._showBootError('Required attribute missing: cluster-id  (or both stack-name + cluster-name)');
+    // 1. Attribute provided — use it directly
+    if (this.clusterId || (this.stackName && this.clusterName)) {
+      this._loadData();
       return;
     }
-    this._loadData();
+
+    // 2. Try to parse context from the current URL
+    var ctx = this._tryUrlContext();
+    if (ctx.clusterId) {
+      this.clusterId = ctx.clusterId;
+      this._loadData();
+      return;
+    }
+    if (ctx.stackName && ctx.clusterName) {
+      this.stackName   = ctx.stackName;
+      this.clusterName = ctx.clusterName;
+      this._loadData();
+      return;
+    }
+
+    // 3. No context available — show project → environment picker
+    this._showPicker();
+  }
+
+  // Try to extract env context from the page URL
+  _tryUrlContext() {
+    var result = { clusterId: null, stackName: null, clusterName: null };
+    try {
+      var search   = window.location.search  || '';
+      var hash     = window.location.hash    || '';
+      var pathname = window.location.pathname || '';
+      var full     = pathname + hash + search;
+
+      // Query param ?clusterId=xxx or ?cluster-id=xxx
+      var qp = new URLSearchParams(search);
+      if (qp.get('clusterId'))   { result.clusterId = qp.get('clusterId');   return result; }
+      if (qp.get('cluster-id'))  { result.clusterId = qp.get('cluster-id');  return result; }
+
+      // Path pattern: /projects/{stack}/environments/{cluster}
+      var m = full.match(/\/projects\/([^\/\?#]+)\/environments\/([^\/\?#]+)/);
+      if (m) {
+        result.stackName   = decodeURIComponent(m[1]);
+        result.clusterName = decodeURIComponent(m[2]);
+        return result;
+      }
+
+      // Hash pattern: #/projects/{stack}/environments/{cluster}
+      m = hash.match(/\/projects\/([^\/\?#]+)\/environments\/([^\/\?#]+)/);
+      if (m) {
+        result.stackName   = decodeURIComponent(m[1]);
+        result.clusterName = decodeURIComponent(m[2]);
+        return result;
+      }
+    } catch (e) { /* ignore */ }
+    return result;
   }
 
   disconnectedCallback() {
@@ -1103,6 +1153,148 @@ class EnvironmentOverview extends HTMLElement {
       `<div class="boot-error">${msg}</div>`;
   }
 
+  // ── Picker (no context available) ─────────────────────────────────────────
+
+  _showPicker() {
+    var lo = this.shadowRoot.getElementById('loading-overlay');
+    if (lo) lo.style.display = 'none';
+
+    var root = this.shadowRoot;
+    root.getElementById('header-section').innerHTML = '';
+    root.getElementById('banners-section').innerHTML = '';
+    root.getElementById('cards-section').innerHTML   = '';
+    root.getElementById('tabs-nav').innerHTML        = '';
+    root.getElementById('tab-content').innerHTML     = `
+      <div class="picker-wrap">
+        <div class="picker-card">
+          <div class="picker-title">
+            <span class="picker-icon">🌐</span>
+            Environment Overview
+          </div>
+          <p class="picker-sub">Select a project and environment to view its overview.</p>
+
+          <div class="picker-field">
+            <label class="picker-label">Project</label>
+            <select id="proj-select" class="picker-select">
+              <option value="">Loading projects…</option>
+            </select>
+          </div>
+
+          <div class="picker-field" id="env-field" style="display:none">
+            <label class="picker-label">Environment</label>
+            <select id="env-select" class="picker-select">
+              <option value="">Select environment…</option>
+            </select>
+          </div>
+
+          <div id="picker-error" class="picker-error" style="display:none"></div>
+
+          <button class="cta-btn primary picker-go" id="picker-go" disabled>
+            View Environment
+          </button>
+        </div>
+      </div>`;
+
+    this._loadPickerProjects();
+    this._attachPickerListeners();
+  }
+
+  async _loadPickerProjects() {
+    var data = await this._api('/cc-ui/v1/stacks/');
+    var sel  = this.shadowRoot.getElementById('proj-select');
+    if (!sel) return;
+
+    if (!data) {
+      sel.innerHTML = '<option value="">Failed to load projects</option>';
+      return;
+    }
+
+    var list = Array.isArray(data) ? data : (data.content || data.stacks || data.items || []);
+    if (!list.length) {
+      sel.innerHTML = '<option value="">No projects found</option>';
+      return;
+    }
+
+    list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+    sel.innerHTML = '<option value="">— Select project —</option>' +
+      list.map(function(s) {
+        return '<option value="' + (s.name || s.stackName) + '">' + (s.name || s.stackName) + '</option>';
+      }).join('');
+  }
+
+  async _loadPickerEnvironments(stackName) {
+    var envField = this.shadowRoot.getElementById('env-field');
+    var sel      = this.shadowRoot.getElementById('env-select');
+    if (!envField || !sel) return;
+
+    envField.style.display = 'block';
+    sel.innerHTML = '<option value="">Loading environments…</option>';
+
+    var data = await this._api('/cc-ui/v1/stacks/' + encodeURIComponent(stackName) + '/clusters-overview');
+    if (!data) {
+      sel.innerHTML = '<option value="">Failed to load environments</option>';
+      return;
+    }
+
+    var list = Array.isArray(data) ? data : (data.content || data.clusters || data.items || []);
+    if (!list.length) {
+      sel.innerHTML = '<option value="">No environments found</option>';
+      return;
+    }
+
+    list.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+    sel.innerHTML = '<option value="">— Select environment —</option>' +
+      list.map(function(c) {
+        var state = c.clusterState || c.state || '';
+        var id    = c.id || c.clusterId || '';
+        return '<option value="' + id + '" data-name="' + (c.name || '') + '">' +
+          (c.name || id) + (state ? ' (' + state + ')' : '') + '</option>';
+      }).join('');
+  }
+
+  _attachPickerListeners() {
+    var self = this;
+    var root = this.shadowRoot;
+
+    var projSel = root.getElementById('proj-select');
+    var envSel  = root.getElementById('env-select');
+    var goBtn   = root.getElementById('picker-go');
+
+    if (projSel) {
+      projSel.addEventListener('change', function() {
+        var stack = projSel.value;
+        var envField = root.getElementById('env-field');
+        if (envField) envField.style.display = 'none';
+        if (envSel)  envSel.innerHTML = '<option value="">Select environment…</option>';
+        if (goBtn)   goBtn.disabled = true;
+        if (stack) self._loadPickerEnvironments(stack);
+      });
+    }
+
+    if (envSel) {
+      envSel.addEventListener('change', function() {
+        if (goBtn) goBtn.disabled = !envSel.value;
+      });
+    }
+
+    if (goBtn) {
+      goBtn.addEventListener('click', function() {
+        var cid = envSel && envSel.value;
+        if (!cid) return;
+        self.clusterId = cid;
+        // Reset data state
+        self.overview = null; self.env = null; self.resourceStats = null;
+        self.varCounts = null; self.deployments = null; self.resources = null;
+        self.ingresses = null; self.schedule = null; self.maintenanceWin = null;
+        self.isLoading = true;
+        // Re-render loading state
+        root.getElementById('tab-content').innerHTML = '';
+        root.getElementById('loading-overlay').style.display = 'flex';
+        self._loadData();
+      });
+    }
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   _hasKubernetes() {
@@ -1538,6 +1730,33 @@ class EnvironmentOverview extends HTMLElement {
       .loading-inline { padding: 1.5rem; text-align: center; color: var(--muted); font-size: 13px; }
       .empty-state    { padding: 1.5rem; text-align: center; color: var(--muted); font-size: 13px; }
       .approve-btn    { color: #2e7d32; border-color: #a5d6a7; background: #e8f5e9; }
+
+      /* ── Picker ── */
+      .picker-wrap {
+        display: flex; align-items: center; justify-content: center;
+        min-height: 70vh; padding: 2rem;
+      }
+      .picker-card {
+        background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+        padding: 2rem 2.5rem; width: 100%; max-width: 420px;
+        box-shadow: 0 4px 24px rgba(0,0,0,.07);
+      }
+      .picker-title {
+        font-size: 1.1rem; font-weight: 700; color: #111;
+        margin-bottom: .4rem; display: flex; align-items: center; gap: .5rem;
+      }
+      .picker-icon { font-size: 1.3rem; }
+      .picker-sub  { font-size: 13px; color: var(--muted); margin-bottom: 1.5rem; }
+      .picker-field { display: flex; flex-direction: column; gap: .35rem; margin-bottom: 1rem; }
+      .picker-label { font-size: 12px; font-weight: 600; color: #444; }
+      .picker-select {
+        padding: .5rem .75rem; border: 1px solid var(--border); border-radius: 6px;
+        font-size: 13px; color: #111; background: #fff; cursor: pointer;
+        outline: none; appearance: auto;
+      }
+      .picker-select:focus { border-color: var(--primary); }
+      .picker-error { color: var(--danger); font-size: 12px; margin-bottom: .75rem; }
+      .picker-go { width: 100%; justify-content: center; padding: .6rem; font-size: 14px; margin-top: .5rem; }
     `;
   }
 }
